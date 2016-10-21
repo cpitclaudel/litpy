@@ -34,6 +34,14 @@
   "Highlight reStructuredText titles in Python files."
   :group 'python)
 
+(defcustom litpy-hide-decorations nil
+  "If non-nil, hide title decorations (underlines and ##).
+If you use this option, consider enabling `litpy-reveal-at-point' as well."
+  :group 'litpy
+  :type 'boolean
+  :set #'litpy--hide-decorations-setter
+  :initialize #'custom-initialize-default)
+
 ;;; Faces
 
 (defface litpy-title-face-1
@@ -60,8 +68,22 @@
   '((t :slant italic :inherit default))
   "Face used for doctests.")
 
-(defconst litpy--title-line-re ;; FIXME should depend on litpy-title-chars
-  "^\\(\\(?:#+@? *\\)?\\)\\(.*\\)\\(\n\\(?:#+@? *\\)?\\)\\(==+\\|--+\\|~~+\\)$")
+(defconst litpy--comment-marker-re "\\(?:#+@? *\\)")
+
+(defconst litpy--title-first-line-re
+  (format "^\\(%s?\\)\\([^# \n].*\\)\\(?:$\\)" litpy--comment-marker-re))
+
+(defconst litpy--title-underline-re ;; FIXME should depend on litpy-title-chars
+  (format "\\(?:^\\)\\(%s?\\)\\(=+\\|-+\\|~+\\)$" litpy--comment-marker-re))
+
+(defconst litpy--title-line-re
+  (concat litpy--title-first-line-re "\\(\n\\)" litpy--title-underline-re)
+  "Regexp matching title lines:
+1. Comment markers on title line
+2. Title
+3. Newline
+4. Comment markers before underline
+5. Underline")
 
 ;;; Editing titles
 
@@ -75,30 +97,43 @@
   "Find char to use after CHAR when cycling through title styles."
   (cadr (member char litpy-title-chars)))
 
+(defun litpy--match-length (n)
+  "Compute length of N th match."
+  (- (or (match-end n) 0) (or (match-beginning n) 0)))
+
+(defun litpy--replace-underline (underline-char)
+  "Update current underline to use UNDERLINE-CHAR."
+  (let* ((comment-starter (match-string 1))
+         (underline (make-string (litpy--match-length 2) underline-char)))
+    (replace-match underline t t nil 5)
+    (replace-match comment-starter t t nil 4)))
+
 (defun litpy-cycle-title ()
   "Cycle through title styles for current line."
   (interactive)
   (save-excursion
     (beginning-of-line)
     (if (looking-at litpy--title-line-re)
-        (let* ((current-length (length (match-string 4)))
-               (new-length (length (match-string 2)))
-               (cur-underline-char (char-after (match-beginning 4)))
-               (new-underline-char
-                (if (= new-length current-length)
-                    (litpy--next-underline-char cur-underline-char)
-                  cur-underline-char)))
+        (let* ((underline-char (char-after (match-beginning 5)))
+               (new-underline-char (if (= (litpy--match-length 2) (litpy--match-length 5))
+                                       (litpy--next-underline-char underline-char)
+                                     underline-char)))
           (if new-underline-char
-              (let ((header (concat "\n" (match-string 1)))
-                    (underline (make-string new-length new-underline-char)))
-                (replace-match underline t t nil 4)
-                (replace-match header t t nil 3))
-            (delete-region (match-end 2) (match-end 4))))
-      (unless (looking-at "\\(#*@* *\\)\\(.+\\)")
-        (user-error "Can't find title to underline"))
-      (goto-char (point-at-eol))
-      (insert "\n" (match-string 1))
-      (insert (make-string (length (match-string 2)) (car litpy-title-chars))))))
+              (litpy--replace-underline new-underline-char)
+            (delete-region (match-end 2) (match-end 0))))
+      (if (looking-at litpy--title-first-line-re)
+          (progn (end-of-line)
+                 (insert "\n" (match-string 1))
+                 (insert (make-string (litpy--match-length 2) (car litpy-title-chars))))
+        (insert-before-markers "# ")
+        (insert "\n# " (char-to-string (car litpy-title-chars)))))))
+
+(defun litpy--update-underline (&rest _)
+  "Update underline on current line, if any."
+  (save-excursion
+    (beginning-of-line)
+    (when (looking-at litpy--title-line-re)
+      (litpy--replace-underline (char-after (match-beginning 5))))))
 
 ;;; Fontification of titles and doctests
 
@@ -139,24 +174,21 @@
 
 (defun litpy--title-face ()
   "Compute face for just-matched title."
-  (let* ((underline-char (char-after (match-beginning 4)))
+  (let* ((underline-char (char-after (match-beginning 5)))
          (pos (cl-position underline-char litpy-title-chars)))
     (or (and pos (elt '(litpy-title-face-1 litpy-title-face-2 litpy-title-face-3) pos))
         font-lock-doc-face)))
-
-(defvar litpy--invisible t
-  "If non-nil, hide title decorations (underlines and ##).")
 
 (defconst litpy--display-spec '(display (space :width (0))))
 
 (defun litpy--fl-decoration-spec ()
   "Compute a font-lock specification for litpy markup."
-  `(face nil ,@(and litpy--invisible litpy--display-spec)))
+  `(face nil ,@(and litpy-hide-decorations litpy--display-spec)))
 
 ;; Fontification of snippets
 
 (defconst litpy--doctest-re
-  "^#*\\s-*\\(>>>\\|\\.\\.\\.\\) ?\\( *\\(.+\\)\\(?:\n\\|\\'\\)\\)"
+  "^#*\\s-*\\(>>>\\|\\.\\.\\.\\) ?\\( *\\(.+\\)$\\)"
   "Regexp matching doctests.")
 
 ;; (defconst litpy--syntax-propertize-rules
@@ -249,21 +281,7 @@ Return a cons (POSITION . SNIPPET)."
       (quick-peek-hide)
       (quick-peek-show output pos nil 'none))))
 
-;;; Minor mode
-
-(defconst litpy--keywords
-  `((,litpy--title-line-re
-     (0 (litpy--title-face) prepend)
-     (1 (litpy--fl-decoration-spec) prepend)
-     (3 (litpy--fl-decoration-spec) prepend)
-     (4 (litpy--fl-decoration-spec) prepend))
-    (,litpy--doctest-re
-     (2 'litpy-doctest-face prepend)
-     (1 'litpy-doctest-header-face prepend)
-     (0 (indirect-font-lock-highlighter 3 'python-mode)))
-    ("^\\(##@?\\s-\\).*"
-     (0 'litpy-doc-face append)
-     (1 (litpy--fl-decoration-spec) prepend))))
+;;; Hide and reveal markup
 
 (defun litpy--refresh-font-lock ()
   "Reset font-locking in current buffer."
@@ -271,15 +289,41 @@ Return a cons (POSITION . SNIPPET)."
       (font-lock-flush)
     (with-no-warnings (font-lock-fontify-buffer))))
 
-(defun litpy-toggle-invisibility (arg)
-  "Set visibility of comment chars and underlines.
-Interactively, toggle; from Lisp, set it explicitly to
-ARG."
-  (interactive '(toggle))
-  (if (eq arg 'toggle)
-      (progn (setq litpy--invisible (not litpy--invisible))
-             (litpy--refresh-font-lock))
-    (setq litpy--invisible arg)))
+(defun litpy--hide-decorations-setter (var val)
+  "Set VAR to VAL and refresh font-locking in all litpy buffers."
+  (set-default var val)
+  (dolist (buf (buffer-list))
+    (when (buffer-local-value 'litpy-mode buf)
+      (with-current-buffer buf
+        (litpy--refresh-font-lock)))))
+
+(defun litpy-toggle-invisibility (invisible)
+  "Toggle visibility of comment chars and underlines.
+From Lisp, set visibility to INVISIBLE."
+  (interactive `(,(not litpy-hide-decorations)))
+  (setq-local litpy-hide-decorations invisible)
+  (litpy--refresh-font-lock))
+
+(defun litpy-hide-decorations ()
+  "Hide comment chars and underlines."
+  (litpy-toggle-invisibility t))
+
+;;; Minor mode
+
+(defconst litpy--keywords
+  `((,litpy--title-line-re
+     (0 (litpy--title-face) prepend)
+     (1 (litpy--fl-decoration-spec) prepend)
+     (3 (litpy--fl-decoration-spec) prepend)
+     (4 (litpy--fl-decoration-spec) prepend)
+     (5 (litpy--fl-decoration-spec) prepend))
+    ("^\\(##@?\\s-\\).*"
+     (0 'litpy-doc-face prepend)
+     (1 (litpy--fl-decoration-spec) prepend))
+    (,litpy--doctest-re
+     (2 'litpy-doctest-face prepend)
+     (1 'litpy-doctest-header-face prepend)
+     (0 (indirect-font-lock-highlighter 3 'python-mode)))))
 
 (defvar litpy-mode-map
   (let ((map (make-sparse-keymap)))
@@ -297,21 +341,15 @@ ARG."
     (litpy-toggle-invisibility t)
     (setq-local font-lock-multiline t)
     (font-lock-add-keywords nil litpy--keywords 'append)
-    (add-to-list 'font-lock-extra-managed-props 'invisible)
-    (make-variable-buffer-local 'syntax-propertize-function)
-    ;; (setq-local syntax-propertize-function #'litpy--syntax-propertize-rules)
-    ;; (add-function :override (local 'syntax-propertize-function) litpy--syntax-propertize-rules)
-    (add-hook 'font-lock-extend-region-functions #'litpy--fl-extend-region-function nil t)
-    ;; (add-hook 'syntax-propertize-extend-region-functions #'litpy--sp-extend-region-function nil t)
-    )
+    (add-to-list 'font-lock-extra-managed-props 'display)
+    (add-hook 'after-change-functions #'litpy--update-underline nil t)
+    (add-hook 'presenter-mode-hook #'litpy-hide-decorations nil t)
+    (add-hook 'font-lock-extend-region-functions #'litpy--fl-extend-region-function nil t))
    (t
-    (litpy-toggle-invisibility nil)
     (font-lock-remove-keywords nil litpy--keywords)
-    ;; (setq-local syntax-propertize-function python-syntax-propertize-function)
-    ;; (remove-function (local 'syntax-propertize-function) litpy--syntax-propertize-rules)
-    (remove-hook 'font-lock-extend-region-functions #'litpy--fl-extend-region-function t)
-    ;; (remove-hook 'syntax-propertize-extend-region-functions #'litpy--sp-extend-region-function t)
-    ))
+    (remove-hook 'after-change-functions #'litpy--update-underline t)
+    (remove-hook 'presenter-mode-hook #'litpy-hide-decorations t)
+    (remove-hook 'font-lock-extend-region-functions #'litpy--fl-extend-region-function t)))
   (litpy--refresh-font-lock))
 
 ;; Local Variables:
