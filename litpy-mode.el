@@ -42,6 +42,12 @@ If you use this option, consider enabling `litpy-reveal-at-point' as well."
   :set #'litpy--hide-decorations-setter
   :initialize #'custom-initialize-default)
 
+(defcustom litpy-reveal-at-point nil
+  "Reveal title markup when point is in a title.
+This is convenient in conjunction with `litpy-hide-decorations'."
+  :group 'litpy
+  :type 'boolean)
+
 ;;; Faces
 
 (defface litpy-title-face-1
@@ -352,6 +358,35 @@ From Lisp, set visibility to INVISIBLE."
   "Hide comment chars and underlines."
   (litpy-toggle-invisibility t))
 
+(defvar-local litpy--title-beg nil)
+(defvar-local litpy--title-end nil)
+
+(defvar-local litpy--title-boundaries nil)
+(defvar litpy--title-timer nil)
+
+(defun litpy--post-command-hook (&rest _)
+  "Reveal or hide title markup around point."
+  (pcase-let ((`(,beg . ,end) litpy--title-boundaries))
+    (when (and beg end (not (<= beg (point) end)))
+      (save-excursion (font-lock-flush beg end))
+      (setq litpy--title-boundaries nil)))
+  (unless litpy--title-timer
+    (setq litpy--title-timer (run-with-idle-timer 0.05 nil #'litpy--reveal-at-point))))
+
+(defun litpy--reveal-at-point ()
+  "Reveal title markup around point."
+  (when litpy-reveal-at-point
+    (save-excursion
+      (beginning-of-line)
+      ;; (beginning-of-visual-line)
+      (when (looking-at litpy--title-line-re)
+        (let ((beg (match-beginning 0)) (end (match-end 0)))
+          (setq litpy--title-boundaries (cons beg end))
+          (with-silent-modifications
+            (remove-text-properties (match-beginning 3) (match-end 3) '(display))
+            (remove-text-properties (match-beginning 5) (match-end 5) '(display)))))))
+  (setq litpy--title-timer nil))
+
 ;;; Minor mode
 
 (defconst litpy--keywords
@@ -386,11 +421,13 @@ From Lisp, set visibility to INVISIBLE."
     (setq-local font-lock-multiline t)
     (font-lock-add-keywords nil litpy--keywords 'append)
     (add-to-list 'font-lock-extra-managed-props 'display)
+    (add-hook 'post-command-hook #'litpy--post-command-hook nil t)
     (add-hook 'after-change-functions #'litpy--update-underline nil t)
     (add-hook 'presenter-mode-hook #'litpy-hide-decorations nil t)
     (add-hook 'font-lock-extend-region-functions #'litpy--fl-extend-region-function nil t))
    (t
     (font-lock-remove-keywords nil litpy--keywords)
+    (remove-hook 'post-command-hook #'litpy--post-command-hook t)
     (remove-hook 'after-change-functions #'litpy--update-underline t)
     (remove-hook 'presenter-mode-hook #'litpy-hide-decorations t)
     (remove-hook 'font-lock-extend-region-functions #'litpy--fl-extend-region-function t)))
