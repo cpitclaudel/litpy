@@ -377,13 +377,12 @@ From Lisp, set visibility to INVISIBLE."
     (define-key map (kbd "<menu>") #'litpy-eval-snippet-inline)
     map))
 
-(define-minor-mode litpy-minor-mode
-  "Highlight reStructuredText titles in Python files."
+(define-minor-mode litpy-mode
+  "Literate programming in Python."
   :lighter " 🐍" ;; 📜
   :keymap litpy-mode-map
   (cond
-   (litpy-minor-mode
-    (litpy-toggle-invisibility t)
+   (litpy-mode
     (setq-local font-lock-multiline t)
     (font-lock-add-keywords nil litpy--keywords 'append)
     (add-to-list 'font-lock-extra-managed-props 'display)
