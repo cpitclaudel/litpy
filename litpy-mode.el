@@ -245,21 +245,53 @@ If you use this option, consider enabling `litpy-reveal-at-point' as well."
 
 ;;; Snippets
 
-(defun litpy--snippet-at-point ()
-  "Find doctest or snippet at point.
-Return a cons (POSITION . SNIPPET)."
-  (save-excursion
-    (beginning-of-line)
-    (let ((insert-point nil)
-          (lines nil))
-      (while (and (looking-at litpy--doctest-re)
-                  (or (eq lines nil) (string= (match-string 1) "...")))
-        (setq insert-point (match-beginning 1))
-        (push (match-string-no-properties 3) lines)
-        (forward-line))
-      (unless lines
-        (user-error "No snippet at point"))
-      (cons insert-point (mapconcat #'identity (nreverse lines) "")))))
+(defun litpy--beginning-of-snippet (&optional many)
+  "Go to beginning of snippet at point.
+With non-nil MANY, skip over multiple consecutive snippets."
+  (beginning-of-line)
+  (while (and (looking-at litpy--doctest-re)
+              (or many (string= (match-string 1) "..."))
+              (= (forward-line -1) 0))))
+
+(defun litpy--beginning-of-snippets ()
+  "Go to beginning of snippet block at point."
+  (let ((limit (point-at-eol)))
+    (litpy--beginning-of-snippet t)
+    (when (re-search-forward litpy--doctest-re limit t)
+      (beginning-of-line))))
+
+(defun litpy--read-snippet ()
+  "Read doctest or snippet at point.
+Return a cons (POSITION-ON-LAST-LINE . SNIPPET)."
+  (litpy--beginning-of-snippet)
+  (let ((lines nil))
+    (while (and (looking-at litpy--doctest-re)
+                (or (eq lines nil) (string= (match-string 1) "...")))
+      (push (cons (match-beginning 1)
+                  (match-string-no-properties 2))
+            lines)
+      (forward-line))
+    (when lines
+      (cons (caar lines)
+            (mapconcat #'cdr (nreverse lines) "\n")))))
+
+(defun litpy--read-snippets ()
+  "Read block of snippets or doctests around point.
+Return a cons of (POSITION-ON-LAST-LINE . SNIPPETS)."
+  (litpy--beginning-of-snippets)
+  (let ((snippet nil)
+        (snippets nil))
+    (while (setq snippet (litpy--read-snippet))
+      (push snippet snippets))
+    (when snippets
+      (cons (caar snippets)
+            (mapcar #'cdr (nreverse snippets))))))
+
+(defun litpy--snippet-at-point (&optional many)
+  "Find snippet (or snippets, if MANY) at point.
+Return a cons (POSITION-ON-LAST-LINE . SNIPPET)."
+  (or (save-excursion (if many (litpy--read-snippets) (litpy--read-snippet)))
+      (user-error "No snippet at point")))
 
 (defun litpy-copy-snippet-to-interpreter ()
   "Copy snippet at point to interpreter."
@@ -272,14 +304,26 @@ Return a cons (POSITION . SNIPPET)."
       (pop-to-buffer (current-buffer))
       (set-window-point (selected-window) (point-max)))))
 
-(defun litpy-eval-snippet-inline ()
-  "Show result of running snippet at point."
-  (interactive)
-  (pcase-let* ((`(,pos . ,cmd) (litpy--snippet-at-point))
-               (output (python-shell-send-string-no-output cmd (run-python))))
+(defun litpy-eval-snippet-inline (&optional many)
+  "Show result of running snippet at point.
+With non-nil MANY (interactively, with prefix arg), evaluate the
+full surrounding block."
+  (interactive "P")
+  (pcase-let* ((`(,pos . ,cmd) (litpy--snippet-at-point many))
+               (python (run-python)))
     (unless (> (quick-peek-hide pos) 0)
       (quick-peek-hide)
-      (quick-peek-show output pos nil 'none))))
+      (let ((output nil))
+        (dolist (cmd (if many cmd (list cmd)))
+          (setq output (python-shell-send-string-no-output cmd python)))
+        (quick-peek-show output pos nil 'none)))))
+
+(defun litpy-eval-snippets-inline (just-one)
+  "Show results of running snippets around point.
+With non-nil JUST-ONE (interactively, with prefix arg), evaluate
+just the snippet at point."
+  (interactive "P")
+  (litpy-eval-snippet-inline (not just-one)))
 
 ;;; Hide and reveal markup
 
@@ -329,6 +373,7 @@ From Lisp, set visibility to INVISIBLE."
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-c C-=") #'litpy-cycle-title)
     (define-key map (kbd "C-c <C-return>") #'litpy-copy-snippet-to-interpreter)
+    (define-key map (kbd "<S-menu>") #'litpy-eval-snippets-inline)
     (define-key map (kbd "<menu>") #'litpy-eval-snippet-inline)
     map))
 
