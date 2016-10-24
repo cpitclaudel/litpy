@@ -23,6 +23,7 @@
 ;;; Code:
 
 (require 'python)
+(require 'hideshow)
 (require 'font-lock)
 (require 'quick-peek)
 (require 'indirect-font-lock)
@@ -34,19 +35,27 @@
   "Highlight reStructuredText titles in Python files."
   :group 'python)
 
-(defcustom litpy-hide-decorations nil
+(defcustom litpy-hide-title-markup nil
   "If non-nil, hide title decorations (underlines and ##).
 If you use this option, consider enabling `litpy-reveal-at-point' as well."
   :group 'litpy
   :type 'boolean
-  :set #'litpy--hide-decorations-setter
+  :set #'litpy--font-lock-setter
   :initialize #'custom-initialize-default)
 
 (defcustom litpy-reveal-at-point nil
   "Reveal title markup when point is in a title.
-This is convenient in conjunction with `litpy-hide-decorations'."
+This is convenient in conjunction with `litpy-hide-title-markup'."
   :group 'litpy
   :type 'boolean)
+
+(defcustom litpy-hide-quotes t
+  "If non-nil, hide double quotes in docstrings (\\=`\\=`…\\=`\\=`) .
+If you use this option, consider enabling `litpy-reveal-at-point' as well."
+  :group 'litpy
+  :type 'boolean
+  :set #'litpy--font-lock-setter
+  :initialize #'custom-initialize-default)
 
 ;;; Faces
 
@@ -73,6 +82,14 @@ This is convenient in conjunction with `litpy-hide-decorations'."
 (defface litpy-doctest-face
   '((t :slant italic :inherit default))
   "Face used for doctests.")
+
+(defface litpy-single-quoted-face
+  '((t :slant italic :inherit font-lock-variable-name-face)) ;; :inherit font-lock-variable-name-face
+  "Face used for snippets wrapped in single backticks (\\=`…\\=`).")
+
+(defface litpy-double-quoted-face
+  '((t :slant italic :weight normal :inherit (font-lock-string-face default)))
+  "Face used for snippets wrapped in double backticks (\\=`\\=`…\\=`\\=`).")
 
 (defconst litpy--comment-marker-re "\\(?:#+@? *\\)")
 
@@ -187,15 +204,24 @@ This is convenient in conjunction with `litpy-hide-decorations'."
 
 (defconst litpy--display-spec '(display (space :width (0))))
 
-(defun litpy--fl-decoration-spec ()
-  "Compute a font-lock specification for litpy markup."
-  `(face nil ,@(and litpy-hide-decorations litpy--display-spec)))
+(defun litpy--fl-decoration-spec (&optional switch)
+  "Compute a font-lock specification for litpy markup.
+This either shows or hide the corresponding text span, depending
+on the value of SWITCH (default: `litpy-hide-title-markup')."
+  (setq switch (or switch litpy-hide-title-markup))
+  `(face nil ,@(and (symbol-value switch) litpy--display-spec)))
 
 ;; Fontification of snippets
 
 (defconst litpy--doctest-re
   "^#*\\s-*\\(>>>\\|\\.\\.\\.\\) ?\\( *\\(.+\\)$\\)"
   "Regexp matching doctests.")
+
+(defconst litpy--single-quoted-re
+  "[^`]\\(`\\)\\([^`\n ]+\\)\\(`\\)[^`]")
+
+(defconst litpy--double-quoted-re
+  "\\(``\\)\\([^`\n]+\\)\\(``\\)")
 
 ;; (defconst litpy--syntax-propertize-rules
 ;;   (syntax-propertize-rules
@@ -339,7 +365,7 @@ just the snippet at point."
       (font-lock-flush)
     (with-no-warnings (font-lock-fontify-buffer))))
 
-(defun litpy--hide-decorations-setter (var val)
+(defun litpy--font-lock-setter (var val)
   "Set VAR to VAL and refresh font-locking in all litpy buffers."
   (set-default var val)
   (dolist (buf (buffer-list))
@@ -347,16 +373,23 @@ just the snippet at point."
       (with-current-buffer buf
         (litpy--refresh-font-lock)))))
 
-(defun litpy-toggle-invisibility (invisible)
-  "Toggle visibility of comment chars and underlines.
-From Lisp, set visibility to INVISIBLE."
-  (interactive `(,(not litpy-hide-decorations)))
-  (setq-local litpy-hide-decorations invisible)
+(defun litpy-toggle-quotes-markup ()
+  "Toggle visibility of quotes."
+  (interactive)
+  (setq-local litpy-hide-quotes (not litpy-hide-quotes))
   (litpy--refresh-font-lock))
 
-(defun litpy-hide-decorations ()
-  "Hide comment chars and underlines."
-  (litpy-toggle-invisibility t))
+(defun litpy-toggle-title-markup ()
+  "Toggle visibility of comment chars and underlines."
+  (interactive)
+  (setq-local litpy-hide-title-markup (not litpy-hide-title-markup))
+  (litpy--refresh-font-lock))
+
+(defun litpy-hide-markup ()
+  "Hide all decorations."
+  (setq litpy-hide-title-markup t)
+  (setq litpy-hide-quotes t)
+  (litpy--refresh-font-lock))
 
 (defvar-local litpy--title-beg nil)
 (defvar-local litpy--title-end nil)
@@ -387,6 +420,16 @@ From Lisp, set visibility to INVISIBLE."
             (remove-text-properties (match-beginning 5) (match-end 5) '(display)))))))
   (setq litpy--title-timer nil))
 
+;;; Hideshow
+
+(defun litpy--setup-hideshow ()
+  "Set hideshow variables."
+  (setq-local hs-block-start-regexp "^[ \t]+\\(\"\"\"\\|'''\\)")
+  (setq-local hs-block-start-mdata-select 1)
+  (setq-local hs-block-end-regexp "\\(\"\"\"\\|'''\\)")
+  (setq-local hs-hide-comments-when-hiding-all nil)
+  (setq-local hs-forward-sexp-func #'forward-sexp))
+
 ;;; Minor mode
 
 (defconst litpy--keywords
@@ -396,13 +439,28 @@ From Lisp, set visibility to INVISIBLE."
      (3 (litpy--fl-decoration-spec) prepend)
      (4 (litpy--fl-decoration-spec) prepend)
      (5 (litpy--fl-decoration-spec) prepend))
+    ;; ("^ +" (0 'default prepend))
     ("^\\(##@?\\s-\\).*"
      (0 'litpy-doc-face prepend)
      (1 (litpy--fl-decoration-spec) prepend))
     (,litpy--doctest-re
      (2 'litpy-doctest-face prepend)
      (1 'litpy-doctest-header-face prepend)
-     (0 (indirect-font-lock-highlighter 3 'python-mode)))))
+     (0 (indirect-font-lock-highlighter 3 'python-mode)))
+    (,litpy--single-quoted-re ;; FIXME only in docstrings!
+     (1 (litpy--fl-decoration-spec 'litpy-hide-quotes) prepend)
+     (2 'litpy-single-quoted-face prepend)
+     (3 (litpy--fl-decoration-spec 'litpy-hide-quotes) prepend))
+    ;; ("\\(\n\\) +\"\"\"" (1 '(face nil display (space :align-to 80))))
+    ;; ("^ +\"\"\".*\\(\n\\)" (1 '(face nil line-height 1.2)))
+    ;; ("\"\"\"\\(\n\\)" (1 '(face nil line-spacing 0.2)))
+    (,litpy--double-quoted-re
+     (1 (litpy--fl-decoration-spec 'litpy-hide-quotes) prepend)
+     ;; (1 '(face nil display "“") prepend)
+     (2 'litpy-double-quoted-face prepend)
+     ;; (3 '(face nil display " ”") prepend)
+     (3 (litpy--fl-decoration-spec 'litpy-hide-quotes) prepend)
+     (0 (indirect-font-lock-highlighter 2 'python-mode)))))
 
 (defvar litpy-mode-map
   (let ((map (make-sparse-keymap)))
@@ -421,21 +479,19 @@ From Lisp, set visibility to INVISIBLE."
     (setq-local font-lock-multiline t)
     (font-lock-add-keywords nil litpy--keywords 'append)
     (add-to-list 'font-lock-extra-managed-props 'display)
+    (add-hook 'font-lock-extend-region-functions #'litpy--fl-extend-region-function nil t)
     (add-hook 'post-command-hook #'litpy--post-command-hook nil t)
     (add-hook 'after-change-functions #'litpy--update-underline nil t)
-    (add-hook 'presenter-mode-hook #'litpy-hide-decorations nil t)
-    (add-hook 'font-lock-extend-region-functions #'litpy--fl-extend-region-function nil t))
+    (add-hook 'hs-minor-mode-hook #'litpy--setup-hideshow nil t)
+    (add-hook 'presenter-mode-hook #'litpy-hide-markup nil t))
    (t
     (font-lock-remove-keywords nil litpy--keywords)
+    (remove-hook 'font-lock-extend-region-functions #'litpy--fl-extend-region-function t)
     (remove-hook 'post-command-hook #'litpy--post-command-hook t)
     (remove-hook 'after-change-functions #'litpy--update-underline t)
-    (remove-hook 'presenter-mode-hook #'litpy-hide-decorations t)
-    (remove-hook 'font-lock-extend-region-functions #'litpy--fl-extend-region-function t)))
+    (remove-hook 'hs-minor-mode-hook #'litpy--setup-hideshow t)
+    (remove-hook 'presenter-mode-hook #'litpy-hide-markup t)))
   (litpy--refresh-font-lock))
-
-;; Local Variables:
-;; nameless-current-name: "litpy"
-;; End:
 
 (provide 'litpy-mode)
 ;;; litpy-mode.el ends here
