@@ -76,7 +76,7 @@ If you use this option, consider enabling `litpy-reveal-at-point' as well."
   "Face used for ## comments.")
 
 (defface litpy-doctest-header-face
-  '((t :slant normal :inherit font-lock-constant-face))
+  '((t :slant normal :inherit (font-lock-constant-face default)))
   "Face used for doctest markers “>>>” and “...”.")
 
 (defface litpy-doctest-face
@@ -84,11 +84,11 @@ If you use this option, consider enabling `litpy-reveal-at-point' as well."
   "Face used for doctests.")
 
 (defface litpy-single-quoted-face
-  '((t :slant italic :inherit font-lock-variable-name-face)) ;; :inherit font-lock-variable-name-face
+  '((t :slant italic :weight semi-bold)) ;; :inherit font-lock-variable-name-face
   "Face used for snippets wrapped in single backticks (\\=`…\\=`).")
 
 (defface litpy-double-quoted-face
-  '((t :slant italic :weight normal :inherit (font-lock-string-face default)))
+  '((t :slant italic :weight normal :inherit font-lock-string-face))
   "Face used for snippets wrapped in double backticks (\\=`\\=`…\\=`\\=`).")
 
 (defconst litpy--comment-marker-re "\\(?:#+@? *\\)")
