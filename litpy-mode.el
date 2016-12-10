@@ -32,7 +32,7 @@
 (defvar font-lock-end)
 
 (defgroup litpy nil
-  "Highlight reStructuredText titles in Python files."
+  "Literate Python: highlight reStructuredText, and peek at doctest output."
   :group 'python)
 
 (defcustom litpy-hide-title-markup nil
@@ -91,22 +91,29 @@ If you use this option, consider enabling `litpy-reveal-at-point' as well."
   '((t :slant italic :weight normal :inherit font-lock-string-face))
   "Face used for snippets wrapped in double backticks (\\=`\\=`…\\=`\\=`).")
 
+(defface litpy-hidden-underline-face
+  '((t :height 1))
+  "Face applied to title underlines after hiding them with `litpy-hide-markup'.
+You can e.g. give it a background to show a solid line under each title.")
+
 (defconst litpy--comment-marker-re "\\(?:#+@? *\\)")
 
 (defconst litpy--title-first-line-re
   (format "^\\(%s?\\)\\([^# \n].*\\)\\(?:$\\)" litpy--comment-marker-re))
 
 (defconst litpy--title-underline-re ;; FIXME should depend on litpy-title-chars
-  (format "\\(?:^\\)\\(%s?\\)\\(=+\\|-+\\|~+\\)$" litpy--comment-marker-re))
+  (format "\\(?:^\\)\\(%s?\\)\\(=+\\|-+\\|~+\\)\\(?:$\\)" litpy--comment-marker-re))
 
 (defconst litpy--title-line-re
-  (concat litpy--title-first-line-re "\\(\n\\)" litpy--title-underline-re)
+  (concat litpy--title-first-line-re "\\(\n\\)" "\\(" litpy--title-underline-re "\\(\n?\\)" "\\)")
   "Regexp matching title lines:
 1. Comment markers on title line
 2. Title
 3. Newline
-4. Comment markers before underline
-5. Underline")
+4. Entire second line
+5. Comment markers before underline
+6. Underline
+7. Newline (optional)")
 
 ;;; Editing titles
 
@@ -128,8 +135,8 @@ If you use this option, consider enabling `litpy-reveal-at-point' as well."
   "Update current underline to use UNDERLINE-CHAR."
   (let* ((comment-starter (match-string 1))
          (underline (make-string (litpy--match-length 2) underline-char)))
-    (replace-match underline t t nil 5)
-    (replace-match comment-starter t t nil 4)))
+    (replace-match underline t t nil 6)
+    (replace-match comment-starter t t nil 5)))
 
 (defun litpy-cycle-title ()
   "Cycle through title styles for current line."
@@ -137,13 +144,13 @@ If you use this option, consider enabling `litpy-reveal-at-point' as well."
   (save-excursion
     (beginning-of-line)
     (if (looking-at litpy--title-line-re)
-        (let* ((underline-char (char-after (match-beginning 5)))
-               (new-underline-char (if (= (litpy--match-length 2) (litpy--match-length 5))
+        (let* ((underline-char (char-after (match-beginning 6)))
+               (new-underline-char (if (= (litpy--match-length 2) (litpy--match-length 6))
                                        (litpy--next-underline-char underline-char)
                                      underline-char)))
           (if new-underline-char
               (litpy--replace-underline new-underline-char)
-            (delete-region (match-end 2) (match-end 0))))
+            (delete-region (match-end 2) (match-end 6))))
       (if (looking-at litpy--title-first-line-re)
           (progn (end-of-line)
                  (insert "\n" (match-string 1))
@@ -156,7 +163,7 @@ If you use this option, consider enabling `litpy-reveal-at-point' as well."
   (save-excursion
     (beginning-of-line)
     (when (looking-at litpy--title-line-re)
-      (litpy--replace-underline (char-after (match-beginning 5))))))
+      (litpy--replace-underline (char-after (match-beginning 6))))))
 
 ;;; Fontification of titles and doctests
 
@@ -173,7 +180,7 @@ If you use this option, consider enabling `litpy-reveal-at-point' as well."
   (goto-char font-lock-end)
   (beginning-of-line)
   (setq font-lock-end (if (looking-at litpy--title-line-re)
-                  (match-end 0)
+                  (match-end 6)
                 (point-at-eol))))
 
 (defun litpy--fl-extend-region-function ()
@@ -197,19 +204,10 @@ If you use this option, consider enabling `litpy-reveal-at-point' as well."
 
 (defun litpy--title-face ()
   "Compute face for just-matched title."
-  (let* ((underline-char (char-after (match-beginning 5)))
+  (let* ((underline-char (char-after (match-beginning 6)))
          (pos (cl-position underline-char litpy-title-chars)))
     (or (and pos (elt '(litpy-title-face-1 litpy-title-face-2 litpy-title-face-3) pos))
         font-lock-doc-face)))
-
-(defconst litpy--display-spec '(display (space :width (0))))
-
-(defun litpy--fl-decoration-spec (&optional switch)
-  "Compute a font-lock specification for litpy markup.
-This either shows or hide the corresponding text span, depending
-on the value of SWITCH (default: `litpy-hide-title-markup')."
-  (setq switch (or switch litpy-hide-title-markup))
-  `(face nil ,@(and (symbol-value switch) litpy--display-spec)))
 
 ;; Fontification of snippets
 
@@ -416,8 +414,7 @@ just the snippet at point."
         (let ((beg (match-beginning 0)) (end (match-end 0)))
           (setq litpy--title-boundaries (cons beg end))
           (with-silent-modifications
-            (remove-text-properties (match-beginning 3) (match-end 3) '(display))
-            (remove-text-properties (match-beginning 5) (match-end 5) '(display)))))))
+            (remove-text-properties (match-beginning 0) (match-end 0) '(display)))))))
   (setq litpy--title-timer nil))
 
 ;;; Hideshow
@@ -432,17 +429,27 @@ just the snippet at point."
 
 ;;; Minor mode
 
+(defconst litpy--thin-display-spec '(display (space :width (0))))
+
+(defun litpy--fl-decoration-spec (&optional switch)
+  "Compute a font-lock specification for litpy markup.
+This either shows or hide the corresponding text span, depending
+on the value of SWITCH (default: `litpy-hide-title-markup')."
+  (setq switch (or switch 'litpy-hide-title-markup))
+  `(face nil ,@(and (symbol-value switch) litpy--thin-display-spec)))
+
 (defconst litpy--keywords
   `((,litpy--title-line-re
      (0 (litpy--title-face) prepend)
      (1 (litpy--fl-decoration-spec) prepend)
-     (3 (litpy--fl-decoration-spec) prepend)
-     (4 (litpy--fl-decoration-spec) prepend)
-     (5 (litpy--fl-decoration-spec) prepend))
-    ;; ("^ +" (0 'default prepend))
+     (4 `(face ,(when litpy-hide-title-markup 'litpy-hidden-underline-face)) prepend)
+     (5 (litpy--fl-decoration-spec) prepend)
+     ;; `(face nil display (space :width ,(litpy--match-length 2))) ;; FIXME this space width isn't right
+     (6 (litpy--fl-decoration-spec) prepend))
     ("^\\(##@?\\s-\\).*"
      (0 'litpy-doc-face prepend)
      (1 (litpy--fl-decoration-spec) prepend))
+    ;; ("^ +" (0 'default prepend))
     (,litpy--doctest-re
      (2 'litpy-doctest-face prepend)
      (1 'litpy-doctest-header-face prepend)
