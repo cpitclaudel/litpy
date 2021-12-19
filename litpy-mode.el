@@ -327,7 +327,7 @@ Return a cons (POSITION-ON-LAST-LINE . SNIPPET)."
   "Copy snippet at point to interpreter."
   (interactive)
   (let ((cmd (cdr (litpy--snippet-at-point)))
-        (python (run-python)))
+        (python (save-excursion (run-python))))
     (with-current-buffer (process-buffer python)
       (goto-char (point-max))
       (insert cmd)
@@ -340,7 +340,7 @@ With non-nil MANY (interactively, with prefix arg), evaluate the
 full surrounding block."
   (interactive "P")
   (pcase-let* ((`(,pos . ,cmd) (litpy--snippet-at-point many))
-               (python (run-python)))
+               (python (save-excursion (run-python))))
     (unless (> (quick-peek-hide pos) 0)
       (quick-peek-hide)
       (let ((output nil))
